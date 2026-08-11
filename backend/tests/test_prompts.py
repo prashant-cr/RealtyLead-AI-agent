@@ -4,7 +4,7 @@ from app.agent import prompts
 
 
 def test_latest_version_is_discovered() -> None:
-    assert prompts.latest_version("qualification_system") >= 2
+    assert prompts.latest_version("qualification_system") >= 3
 
 
 def test_missing_prompt_raises_rather_than_returning_empty() -> None:
@@ -58,3 +58,14 @@ def test_v2_carries_the_agents_own_tone() -> None:
 def test_older_prompt_versions_stay_loadable() -> None:
     """Versioning exists so a regression can be rolled back, not just archived."""
     assert prompts.load("qualification_system", version=1)
+
+
+def test_v3_pins_offered_slots_and_suppresses_needless_corrections() -> None:
+    """Both were seen in live conversations against the real model. v2 offered a
+    different set of times on every turn, which reads as though the slots are not
+    real. An earlier draft of v3 then over-corrected and had the model opening
+    turns with "I should correct my last message" when nothing had been wrong."""
+    text = prompts.load("qualification_system", version=3).lower()
+
+    assert "keep offering those same" in text
+    assert "don't narrate corrections" in text
