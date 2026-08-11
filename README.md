@@ -9,6 +9,12 @@ logged to a dashboard the human agent can take over at any moment.
 Built for India first (WhatsApp-centric, English/Hindi/Gujarati), with pluggable
 channels so SMS and email can follow.
 
+![The dashboard: lead pipeline, a qualified conversation, the score breakdown, and the escalation](docs/media/dashboard-demo.gif)
+
+*A real conversation against the live model — the lead is qualified over six
+messages, scored 95/100 with reasons, and escalated the moment they ask to
+negotiate on price. Recorded with `make demo-gif`.*
+
 ---
 
 ## Contents

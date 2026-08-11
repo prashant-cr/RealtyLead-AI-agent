@@ -56,6 +56,17 @@ dashboard-setup:  ## Install dashboard dependencies
 e2e:  ## Playwright tests for the dashboard's critical flows
 	cd frontend && npx playwright test
 
+demo-gif:  ## Re-record the README dashboard GIF: make demo-gif LIVE_TOKEN=rl_...
+	@test -n "$(LIVE_TOKEN)" || { echo "LIVE_TOKEN is required — get one with: make token"; exit 1; }
+	cd frontend && LIVE_TOKEN=$(LIVE_TOKEN) node scripts/record-demo.mjs
+	ffmpeg -v error -y -i frontend/.demo-recording/demo.webm \
+		-vf "fps=10,scale=960:-1:flags=lanczos,palettegen=max_colors=128:stats_mode=diff" \
+		frontend/.demo-recording/palette.png
+	ffmpeg -v error -y -i frontend/.demo-recording/demo.webm -i frontend/.demo-recording/palette.png \
+		-lavfi "fps=10,scale=960:-1:flags=lanczos[v];[v][1:v]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" \
+		docs/media/dashboard-demo.gif
+	@echo "Wrote docs/media/dashboard-demo.gif ($$(du -h docs/media/dashboard-demo.gif | cut -f1))"
+
 test:  ## Run the test suite
 	cd backend && .venv/bin/pytest -q
 

@@ -27,3 +27,6 @@ frontend/.env*
 .DS_Store
 .idea/
 .vscode/
+
+# Raw frames from `make demo-gif` — only the exported GIF is committed.
+frontend/.demo-recording/
