@@ -66,8 +66,10 @@ services:
     command: python -m app.workers.followup_worker
     # The image's HEALTHCHECK curls the API port, which this service does not
     # serve — without overriding it the worker is permanently "unhealthy".
+    # Reading /proc/1 rather than using pgrep: procps is not in the slim image,
+    # and matching only PID 1 avoids the check matching its own command line.
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f followup_worker > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "grep -qa followup_worker /proc/1/cmdline || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 10s
