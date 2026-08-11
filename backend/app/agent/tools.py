@@ -79,6 +79,13 @@ def _decimal(value: float | int | str | None) -> Decimal | None:
 
 # --------------------------------------------------------------------------- schemas
 
+
+# Optional parameters are simply left out of `required` — no nullable unions.
+# Two API constraints drove this: `{"type": ["string", "null"]}` is rejected
+# outright when combined with an enum, and there is a hard limit of 16
+# union-typed parameters across all tools (these six needed 21). Handlers read
+# optional values with `.get()`, so an omitted key is the normal case.
+
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "get_listing_details",
@@ -94,31 +101,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "listing_id": {
-                    "type": ["string", "null"],
+                    "type": "string",
                     "description": "UUID of a specific listing, when known.",
                 },
-                "city": {"type": ["string", "null"], "description": "City to search in."},
+                "city": {"type": "string", "description": "City to search in."},
                 "locality": {
-                    "type": ["string", "null"],
+                    "type": "string",
                     "description": "Locality or area name, e.g. Bopal.",
                 },
-                "property_type": {
-                    "type": ["string", "null"],
-                    "enum": [*(t.value for t in PropertyType), None],
-                },
-                "bhk": {"type": ["integer", "null"], "description": "Number of bedrooms."},
-                "budget_min": {"type": ["number", "null"], "description": "Minimum price in INR."},
-                "budget_max": {"type": ["number", "null"], "description": "Maximum price in INR."},
+                "property_type": {"type": "string", "enum": [t.value for t in PropertyType]},
+                "bhk": {"type": "integer", "description": "Number of bedrooms."},
+                "budget_min": {"type": "number", "description": "Minimum price in INR."},
+                "budget_max": {"type": "number", "description": "Maximum price in INR."},
             },
-            "required": [
-                "listing_id",
-                "city",
-                "locality",
-                "property_type",
-                "bhk",
-                "budget_min",
-                "budget_max",
-            ],
+            "required": [],
             "additionalProperties": False,
         },
     },
@@ -126,53 +122,32 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "update_lead_profile",
         "description": (
             "Record what you have learned about this lead. Call it as soon as they tell "
-            "you something, not once at the end. Pass null for anything they have not "
-            "told you — null leaves the existing value untouched."
+            "you something, not once at the end. Only include the fields they have "
+            "actually told you; anything you leave out keeps its existing value."
         ),
         "strict": True,
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": ["string", "null"]},
-                "budget_min": {"type": ["number", "null"], "description": "In INR."},
-                "budget_max": {"type": ["number", "null"], "description": "In INR."},
-                "preferred_locations": {
-                    "type": ["array", "null"],
-                    "items": {"type": "string"},
-                },
-                "property_type": {
-                    "type": ["string", "null"],
-                    "enum": [*(t.value for t in PropertyType), None],
-                },
-                "bhk": {"type": ["integer", "null"]},
+                "name": {"type": "string"},
+                "budget_min": {"type": "number", "description": "In INR."},
+                "budget_max": {"type": "number", "description": "In INR."},
+                "preferred_locations": {"type": "array", "items": {"type": "string"}},
+                "property_type": {"type": "string", "enum": [t.value for t in PropertyType]},
+                "bhk": {"type": "integer"},
                 "timeline_months": {
-                    "type": ["integer", "null"],
+                    "type": "integer",
                     "description": "Months until they intend to buy.",
                 },
-                "loan_preapproved": {"type": ["boolean", "null"]},
-                "purpose": {
-                    "type": ["string", "null"],
-                    "enum": [*(p.value for p in LeadPurpose), None],
-                },
-                "site_visit_willing": {"type": ["boolean", "null"]},
+                "loan_preapproved": {"type": "boolean"},
+                "purpose": {"type": "string", "enum": [p.value for p in LeadPurpose]},
+                "site_visit_willing": {"type": "boolean"},
                 "notes": {
-                    "type": ["string", "null"],
+                    "type": "string",
                     "description": "Anything else the human agent should know.",
                 },
             },
-            "required": [
-                "name",
-                "budget_min",
-                "budget_max",
-                "preferred_locations",
-                "property_type",
-                "bhk",
-                "timeline_months",
-                "loan_preapproved",
-                "purpose",
-                "site_visit_willing",
-                "notes",
-            ],
+            "required": [],
             "additionalProperties": False,
         },
     },
@@ -202,11 +177,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "description": "call for a phone call, site_visit to view a property.",
                 },
                 "search_days": {
-                    "type": ["integer", "null"],
+                    "type": "integer",
                     "description": "How many days ahead to look. Defaults to 7.",
                 },
             },
-            "required": ["appointment_type", "search_days"],
+            "required": ["appointment_type"],
             "additionalProperties": False,
         },
     },
@@ -231,15 +206,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "enum": [t.value for t in AppointmentType],
                 },
                 "listing_id": {
-                    "type": ["string", "null"],
+                    "type": "string",
                     "description": "The property for a site visit, when there is one.",
                 },
                 "notes": {
-                    "type": ["string", "null"],
+                    "type": "string",
                     "description": "Anything the agent should know before the meeting.",
                 },
             },
-            "required": ["starts_at", "appointment_type", "listing_id", "notes"],
+            "required": ["starts_at", "appointment_type"],
             "additionalProperties": False,
         },
     },

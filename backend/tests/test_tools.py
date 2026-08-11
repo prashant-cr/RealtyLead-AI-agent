@@ -84,8 +84,8 @@ def test_schemas_are_strict_and_closed() -> None:
         assert schema["strict"] is True, schema["name"]
         assert schema["input_schema"]["additionalProperties"] is False, schema["name"]
         properties = schema["input_schema"].get("properties", {})
-        # strict mode requires every property to be listed as required
-        assert set(schema["input_schema"].get("required", [])) == set(properties), schema["name"]
+        # `required` must name real properties; optional ones are simply absent.
+        assert set(schema["input_schema"].get("required", [])) <= set(properties), schema["name"]
         assert len(schema["description"]) > 40, schema["name"]
 
 
@@ -394,3 +394,50 @@ async def test_unknown_tool_raises(session: AsyncSession) -> None:
 
     with pytest.raises(ToolError, match="Unknown tool"):
         await dispatch(ctx, "delete_everything", {})
+
+
+def test_no_schema_uses_a_type_array_union() -> None:
+    """`{"type": ["string", "null"]}` is valid JSON Schema but the Messages API
+    rejects it — and with an enum it fails outright. Use `nullable()` (anyOf).
+
+    This only ever showed up on a live API call; every offline test passed.
+    """
+    offenders: list[str] = []
+
+    def walk(node: object, path: str) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("type"), list):
+                offenders.append(path)
+            for key, value in node.items():
+                walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{path}[{index}]")
+
+    for schema in TOOL_SCHEMAS:
+        walk(schema["input_schema"], schema["name"])
+
+    assert offenders == [], f"use nullable() for these: {offenders}"
+
+
+def test_union_typed_parameters_stay_under_the_api_limit() -> None:
+    """The API caps union-typed parameters at 16 across all tools. Optional fields
+    are expressed by omission from `required`, so this should be zero."""
+    unions = 0
+    for schema in TOOL_SCHEMAS:
+        for prop in schema["input_schema"].get("properties", {}).values():
+            if isinstance(prop.get("type"), list) or "anyOf" in prop:
+                unions += 1
+
+    assert unions <= 16, f"{unions} union-typed parameters; the API rejects more than 16"
+
+
+def test_the_tools_that_need_arguments_require_them() -> None:
+    required = {s["name"]: set(s["input_schema"].get("required", [])) for s in TOOL_SCHEMAS}
+
+    assert required["book_appointment"] == {"starts_at", "appointment_type"}
+    assert required["check_availability"] == {"appointment_type"}
+    assert required["escalate_to_human"] == {"reason", "urgency"}
+    # Search and profile updates are entirely optional by design.
+    assert required["get_listing_details"] == set()
+    assert required["update_lead_profile"] == set()
