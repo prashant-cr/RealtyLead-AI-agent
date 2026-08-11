@@ -4,7 +4,7 @@ from app.agent import prompts
 
 
 def test_latest_version_is_discovered() -> None:
-    assert prompts.latest_version("qualification_system") >= 1
+    assert prompts.latest_version("qualification_system") >= 2
 
 
 def test_missing_prompt_raises_rather_than_returning_empty() -> None:
@@ -26,6 +26,7 @@ def test_render_substitutes_every_placeholder() -> None:
         today="Wednesday 12 August 2026",
         lead_profile="- Nothing yet",
         listing_summary="This agent has 3 active listings.",
+        tone_instructions="Keep it warm and brief.",
     )
 
     assert "$" not in rendered
@@ -46,3 +47,14 @@ def test_prompt_encodes_the_non_negotiable_rules() -> None:
     assert "get_listing_details" in text
     assert "escalate_to_human" in text
     assert "negotiate" in text
+
+
+def test_v2_carries_the_agents_own_tone() -> None:
+    """M7 lets agents set their voice; v1 had no slot for it."""
+    assert "$tone_instructions" in prompts.load("qualification_system", version=2)
+    assert "$tone_instructions" not in prompts.load("qualification_system", version=1)
+
+
+def test_older_prompt_versions_stay_loadable() -> None:
+    """Versioning exists so a regression can be rolled back, not just archived."""
+    assert prompts.load("qualification_system", version=1)

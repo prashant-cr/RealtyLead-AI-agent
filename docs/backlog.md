@@ -111,3 +111,22 @@ Ideas deliberately out of scope for v1. Captured so we stop thinking about them.
   wants debouncing and an index before real volume.
 - **The lead detail page is not accessible-audited** — no keyboard-trap testing,
   no screen-reader pass, and colour is doing some work that text should.
+
+## Noticed while building M7
+- **No password reset.** An agent who forgets their password has no route back in
+  without a DB edit. Needs an email sender, which the product does not have yet.
+- **No email verification.** Signup accepts any well-formed address.
+- **Email validation is a pragmatic regex**, not RFC-complete — deliberate, to
+  avoid pulling in email-validator and dnspython. Revisit when we send email.
+- **No rate limiting on login or signup.** Password guessing is bounded only by
+  scrypt's cost. Redis is in the stack for exactly this.
+- **The session token is still in localStorage** (from M6). Now that there is a
+  real login, an httpOnly cookie plus CSRF is worth doing properly.
+- **No "your sessions" screen.** `AgentSession.user_agent` is recorded but never
+  shown; agents cannot see or revoke individual devices.
+- **Listings can only be imported, not edited.** No add/edit form, no media
+  upload; changing one price means re-uploading the CSV.
+- **No listing de-duplication.** Importing the same file twice doubles the
+  inventory unless `replace` is used.
+- **`needs_rehash` is never called.** Passwords are not upgraded on login when
+  parameters are raised — a small loop to add in the login path.

@@ -27,7 +27,12 @@ WhatsApp templates in three languages, quiet hours, hard cap, opt-out honoured.
 **M6 — Dashboard: done.** Authenticated dashboard API plus a Next.js pipeline
 board, transcripts, score reasons, manual takeover and agent-sent messages.
 
-Next: **M7 — Onboarding** (agent signup, CSV listing import, tone customisation).
+**M7 — Onboarding: done.** Agent signup with real password auth and sessions,
+CSV listing import, working hours, and per-agent tone customisation.
+
+All seven milestones from CLAUDE.md are built. See `docs/backlog.md` for what is
+deliberately not done yet — the largest items are durable webhook processing and
+getting the WhatsApp templates approved.
 
 ## Quickstart
 
@@ -86,15 +91,40 @@ endpoint acknowledges as soon as the message is recorded and runs the model turn
 in the background; see `docs/decisions.md` for why, and for the durability
 limitation that M5 fixes.
 
-## Dashboard (M6)
+## Onboarding (M7)
 
 ```bash
 make dashboard-setup     # once
-make token               # prints a token — copy it
 make dashboard           # http://localhost:3000
 ```
 
-Paste the token into the sign-in screen. The board shows every lead with its
+Open http://localhost:3000/signin?mode=signup and create an account. The
+checklist then walks through the four things needed to start taking leads:
+working hours, listings, WhatsApp, and (optionally) tone and calendar.
+
+**Listings** import from CSV. The parser accepts what agents actually have —
+portal column names (`Property Name`, `Cost`, `Bedrooms`) and Indian price
+formats (`85 lakh`, `2.15 cr`, `85,00,000`) — and rejects what it cannot read,
+with line numbers. Import is all-or-nothing: a file with one bad row imports
+nothing, because a half-loaded catalogue would have the assistant quoting from
+incomplete inventory. Download the sample file from the onboarding page.
+
+**Tone** feeds into the system prompt (`qualification_system_v2.md`). The
+assistant still always identifies as an AI and follows the non-negotiable rules;
+tone changes the voice, not the behaviour.
+
+Passwords are hashed with `hashlib.scrypt`. Sign-in creates a session that
+expires after 14 days and can be revoked; changing a password signs out every
+device. `make token` still issues a long-lived API token for scripts and CI.
+
+## Dashboard (M6)
+
+```bash
+make token               # API token for scripts, or just sign in
+make dashboard           # http://localhost:3000
+```
+
+Sign in with your email and password, or paste an API token. The board shows every lead with its
 score and temperature, filters for the ones that need a human, and a detail view
 with the full WhatsApp transcript, the score broken down by reason, upcoming
 appointments and scheduled nudges. **Take over** stops the assistant replying and

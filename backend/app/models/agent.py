@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import JSON, Boolean, Integer, String, Text
@@ -9,11 +10,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.enums import Language
+from app.models.types import UtcDateTime
 
 if TYPE_CHECKING:
     from app.models.appointment import Appointment
     from app.models.lead import Lead
     from app.models.listing import Listing
+    from app.models.session import AgentSession
 
 DEFAULT_WORKING_HOURS: dict[str, list[str]] = {
     "mon": ["09:30", "19:00"],
@@ -58,16 +61,26 @@ class Agent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    # SHA-256 of the agent's dashboard API token. Tokens are high-entropy random
-    # strings, not user-chosen passwords, so a fast hash is appropriate — there is
-    # no dictionary to attack. Replaced by real accounts in M7.
+    # scrypt hash of the agent's dashboard password (M7). Null for agents created
+    # before signup existed, or seeded ones — they use an API token instead.
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+
+    # SHA-256 of a long-lived API token for scripts and the CLI. Tokens are
+    # high-entropy random strings, not user-chosen passwords, so a fast hash is
+    # appropriate here — there is no dictionary to attack.
     api_token_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+
+    # Set when the agent finishes onboarding; drives the dashboard checklist.
+    onboarded_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
 
     listings: Mapped[list[Listing]] = relationship(
         back_populates="agent", cascade="all, delete-orphan"
     )
     leads: Mapped[list[Lead]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     appointments: Mapped[list[Appointment]] = relationship(
+        back_populates="agent", cascade="all, delete-orphan"
+    )
+    sessions: Mapped[list[AgentSession]] = relationship(
         back_populates="agent", cascade="all, delete-orphan"
     )
 

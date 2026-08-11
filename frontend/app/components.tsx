@@ -82,8 +82,10 @@ export function TokenGate({ onReady }: { onReady: () => void }) {
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6">
       <h1 className="text-xl font-semibold">RealtyLead</h1>
       <p className="mt-2 text-sm text-slate-600">
-        Paste your dashboard token to continue. Generate one with{" "}
-        <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">make token</code>.
+        <Link href="/signin" data-testid="go-signin" className="font-medium text-slate-900 underline">
+          Sign in with your email and password
+        </Link>
+        , or paste an API token below (<code className="rounded bg-slate-200 px-1 py-0.5 text-xs">make token</code>).
       </p>
       <form onSubmit={submit} className="mt-6 space-y-3">
         <input

@@ -317,7 +317,18 @@ class ConversationEngine:
             today=ctx.now.strftime("%A %d %B %Y"),
             lead_profile=self._format_lead_profile(lead),
             listing_summary=await self._format_listing_summary(agent),
+            tone_instructions=self._format_tone(agent),
         )
+
+    @staticmethod
+    def _format_tone(agent: Agent) -> str:
+        """The agent's own voice guidance, set during onboarding (M7)."""
+        tone = (agent.tone_instructions or "").strip()
+        if not tone:
+            return (
+                "No specific tone was set for this agent, so keep it warm, plain and professional."
+            )
+        return f"{agent.name} asks that you write like this:\n\n{tone}"
 
     @staticmethod
     def _format_working_hours(agent: Agent) -> str:

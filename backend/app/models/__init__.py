@@ -11,9 +11,11 @@ from app.models.conversation import Conversation, Message
 from app.models.followup import FollowUpTask
 from app.models.lead import Lead
 from app.models.listing import Listing
+from app.models.session import AgentSession
 
 __all__ = [
     "Agent",
+    "AgentSession",
     "Appointment",
     "Base",
     "Conversation",

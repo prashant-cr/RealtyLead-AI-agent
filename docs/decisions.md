@@ -493,3 +493,86 @@ CORS credentials plus CSRF protection.
 Acceptable while the dashboard loads no third-party scripts, and explicitly worth
 revisiting in M7 alongside real accounts — an httpOnly cookie plus CSRF tokens is
 the better end state.
+
+## 2026-08-11 — M7: scrypt from the stdlib, not bcrypt or argon2
+
+Passwords need a slow, memory-hard hash — the opposite of the fast SHA-256 used
+for API tokens, which are random and have no dictionary to attack.
+
+**Decision:** `hashlib.scrypt`. It is in CPython's stdlib (OpenSSL-backed), it is
+designed for exactly this, and it avoids adding bcrypt or argon2-cffi. Parameters
+are stored alongside each hash (`scrypt$n$r$p$salt$hash`) so they can be raised
+later without invalidating existing passwords; `needs_rehash()` reports when.
+
+**Consequence:** n=2^15 (~100ms, 32 MB per hash here). 2^16 measured at 210ms and
+64 MB, which is a real denial-of-service surface on an unauthenticated login
+endpoint where concurrent attempts multiply the memory. That trade is written
+into the module so the next person raising it knows what to re-measure.
+
+## 2026-08-11 — Sessions replace the single API token for the dashboard
+
+M6 shipped one long-lived token per agent because there were no accounts. With
+signup, a browser login should expire and be revocable per device.
+
+**Decision:** An `agent_sessions` row per login — 14-day expiry, individually
+revocable, `last_used_at` touched at most every 15 minutes. The M6 API token
+stays for scripts and the CLI, where a login flow makes no sense. Both are
+presented as `Authorization: Bearer …` and distinguished by prefix (`rls_` vs
+`rl_`).
+
+**Consequence:** Two credential paths to reason about, which is why they share
+one `current_agent` dependency. Changing a password revokes every session —
+the expected behaviour after "someone may have my password".
+
+## 2026-08-11 — Auth responses never confirm whether an account exists
+
+Signup, login and lead lookup can all be used to probe for existence.
+
+**Decision:** A duplicate signup returns "That email address cannot be used"
+rather than "already registered". An unknown email and a wrong password return
+the identical 401 body, and the unknown-email path still performs a real scrypt
+hash against a dummy value so the timing matches.
+
+**Consequence:** Slightly less helpful errors for legitimate users who have
+forgotten they already signed up. Password reset (not yet built) is the right
+place to solve that, not the error message.
+
+## 2026-08-11 — CSV import is all-or-nothing
+
+An agent uploading a 40-row export will not notice that rows 12 and 31 were
+dropped. The assistant would then quote from an incomplete catalogue, and the
+first sign of trouble would be a lead asking about a property it never mentions.
+
+**Decision:** Nothing is written unless every row parses. Failures come back with
+line numbers and a specific reason, and the UI lists them.
+
+**Consequence:** One bad cell blocks the whole file. That is the right way round:
+the fix is obvious and immediate, whereas a silent partial import is not.
+
+The parser is deliberately forgiving about *shape* while strict about *facts*:
+portal exports name columns "Property Name" / "Cost" / "Bedrooms", and Indian
+agents write prices as "85 lakh", "2.15 cr" or "85,00,000". All are accepted;
+"about a crore maybe" is not.
+
+## 2026-08-11 — Prompt v2 rather than editing v1
+
+`Agent.tone_instructions` has existed since M1 and was never used — it was in the
+backlog from M2. M7 wires it in, which changes the system prompt.
+
+**Decision:** A new `qualification_system_v2.md` with a `$tone_instructions`
+slot. v1 stays on disk and loadable.
+
+**Consequence:** This is what the versioning was for: if v2 regresses, pinning
+back to v1 is a one-line change rather than a git archaeology exercise. Both
+versions are covered by tests.
+
+## 2026-08-11 — Optional onboarding steps do not gate completion
+
+An agent with working hours, listings and WhatsApp can take leads today. Google
+Calendar and a custom tone make it better, not functional.
+
+**Decision:** The checklist shows six steps; only four are required for
+`complete`. `onboarded_at` is stamped the first time those four are done.
+
+**Consequence:** The "under 10 minutes" promise is achievable without an agent
+having to complete a Google OAuth flow before their first lead.
