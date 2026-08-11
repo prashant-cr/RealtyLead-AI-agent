@@ -77,3 +77,21 @@ Ideas deliberately out of scope for v1. Captured so we stop thinking about them.
 - **No reminder before the appointment.** Google's popup reminders fire for the
   agent; the lead gets nothing. A WhatsApp reminder the day before is an obvious
   no-show reducer and fits naturally into M5's worker.
+
+## Noticed while building M5
+- **Webhook processing still uses in-process background tasks.** M5 was expected
+  to fix this, but the follow-up queue turned out not to need Redis, so nothing
+  durable was built for the webhook path. It remains the largest reliability gap:
+  a crash between the webhook ack and the reply loses that turn.
+- **Templates must be approved in WhatsApp Manager before any of this sends.**
+  The copy in `app/channels/templates.py` is written and tested but has never
+  been submitted. Until it is approved, every follow-up will be rejected by Meta.
+  There is no check that the local copy still matches the approved version.
+- **No appointment reminders.** The worker is the natural home for a "your visit
+  is tomorrow at 11" message, which is the cheapest no-show reduction available.
+- **Failed nudges are not retried.** A task that fails stays failed; the next
+  cadence step still fires. A bounded retry would be better than waiting days.
+- **No per-agent nudge rate limit.** A brokerage importing 500 stale leads would
+  send 500 templates in one pass. Redis is in the stack for exactly this.
+- **Follow-up effectiveness is not measured.** Nothing records which attempt
+  number actually produced a reply, so the cadence cannot be tuned with evidence.

@@ -30,6 +30,10 @@ class FollowUpTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     scheduled_for: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    # The lead activity this nudge was scheduled from. If the lead writes again
+    # after this, the task is stale — comparing against created_at instead would
+    # tie the check to DB insert time, which nothing else in the system reasons about.
+    baseline_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     channel: Mapped[Channel] = mapped_column(
         enum_column(Channel), nullable=False, default=Channel.WHATSAPP
     )

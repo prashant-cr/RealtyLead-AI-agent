@@ -21,7 +21,10 @@ webhooks, at-least-once deduplication, delivery receipts, media handling.
 **M4 — Booking: done.** Per-agent Google Calendar OAuth, free/busy-aware
 availability, calendar events with a full lead briefing, graceful degradation.
 
-Next: **M5 — Follow-up worker** (spaced nudges, approved templates, opt-out).
+**M5 — Follow-up worker: done.** Day 1/3/7/14-then-monthly cadence, approved
+WhatsApp templates in three languages, quiet hours, hard cap, opt-out honoured.
+
+Next: **M6 — Dashboard** (lead pipeline, transcripts, scores, manual takeover).
 
 ## Quickstart
 
@@ -32,6 +35,7 @@ make migrate    # apply migrations
 make seed       # demo agent, 3 listings, 2 leads
 make chat       # talk to the agent in your terminal  ← M2
 make run        # http://localhost:8000/docs
+make worker     # follow-up worker (or `make worker-once` for cron)  ← M5
 ```
 
 `make chat` needs `ANTHROPIC_API_KEY` in `.env`. Inside it: `/profile` shows what
@@ -74,6 +78,22 @@ an unsigned or replayed-with-different-content request is rejected with 401. The
 endpoint acknowledges as soon as the message is recorded and runs the model turn
 in the background; see `docs/decisions.md` for why, and for the durability
 limitation that M5 fixes.
+
+## Follow-ups (M5)
+
+A lead who goes quiet is nudged on day 1, 3, 7 and 14, then monthly, measured
+from *their* last message — replying resets the clock. Run the worker alongside
+the API (`make worker`, or the `worker` service in docker-compose); it polls the
+`follow_up_tasks` table every 60s.
+
+Nudges stop immediately when the lead opts out, books, is handed to a human, or
+hits the cap of six. Anything due during the lead's local quiet hours (21:00–09:00)
+is deferred to the morning rather than dropped.
+
+> **Before this can send anything:** the six templates in
+> `app/channels/templates.py` must be submitted and approved in WhatsApp Manager
+> under the same names. Meta rejects unapproved templates, and business-initiated
+> messages outside the 24h window have no other route.
 
 ## Google Calendar (M4)
 

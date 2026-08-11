@@ -44,6 +44,7 @@ from app.models.enums import (
     MessageRole,
     MessageStatus,
 )
+from app.services.followups import cancel_pending, schedule_next
 from app.services.google_calendar import GoogleCalendarClient
 
 log = get_logger(__name__)
@@ -165,6 +166,7 @@ class ConversationEngine:
 
         if conversation.status is ConversationStatus.HUMAN_TAKEOVER:
             # A human owns this thread; record the message and stay quiet.
+            await cancel_pending(self._session, lead.id, "human took over the conversation")
             await self._session.flush()
             return EngineResult(
                 reply="",
@@ -192,6 +194,9 @@ class ConversationEngine:
             reply = FALLBACK_REPLY[lead.language].format(agent=agent.name)
             await self._escalate_for_failure(ctx, str(exc))
             await self._send_and_record(conversation, lead, reply, channel, now)
+            await schedule_next(
+                session=self._session, lead=lead, settings=self._settings, now=now, channel=channel
+            )
             return EngineResult(
                 reply=reply,
                 conversation=conversation,
@@ -204,6 +209,12 @@ class ConversationEngine:
             await self._escalate_for_failure(ctx, ctx.calendar_sync_failed)
 
         await self._send_and_record(conversation, lead, reply, channel, now)
+        # Re-arm the follow-up cadence from this reply. schedule_next cancels any
+        # pending nudge first and returns None when one would be inappropriate —
+        # booked, handed off or opted out — so this one call covers every outcome.
+        await schedule_next(
+            session=self._session, lead=lead, settings=self._settings, now=now, channel=channel
+        )
         return EngineResult(
             reply=reply,
             conversation=conversation,
@@ -460,6 +471,8 @@ class ConversationEngine:
         lead.opted_out_at = now
         lead.status = LeadStatus.OPTED_OUT
         conversation.status = ConversationStatus.CLOSED
+
+        await cancel_pending(self._session, lead.id, "lead opted out")
 
         reply = opt_out_confirmation(lead.language.value)
         await self._send_and_record(conversation, lead, reply, channel, now)

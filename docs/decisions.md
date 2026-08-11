@@ -342,3 +342,87 @@ half-working connection.
 **Consequence:** Agents are re-prompted for consent on every reconnect. That is
 the intended trade — a visible extra click beats a connection that dies
 overnight for reasons nobody can diagnose.
+
+## 2026-08-11 — M5: the queue is Postgres, not Redis
+
+Redis is in the stack for queues, so it was the obvious choice. But the follow-up
+schedule has to survive restarts, be queryable by the dashboard ("when is this
+lead next being contacted?"), and be cancellable from three different places.
+`follow_up_tasks` already models all of that.
+
+**Decision:** The table is the queue. Due work is claimed with
+`SELECT ... FOR UPDATE SKIP LOCKED` on Postgres, so multiple worker replicas can
+run without double-sending. SQLite (tests) skips the clause and runs serially.
+
+**Consequence:** One source of truth instead of two that can disagree, and the
+schedule is inspectable with plain SQL. The cost is polling — a nudge fires
+within one poll interval (60s) of being due, which is irrelevant for a cadence
+measured in days. Redis stays unused for now; rate limiting and the webhook queue
+are still good fits for it.
+
+## 2026-08-11 — Follow-ups are templates, never model-generated
+
+Outside WhatsApp's 24-hour window Meta only delivers pre-approved templates,
+matched by name and language. A model-written nudge could not be delivered.
+
+**Decision:** `app/channels/templates.py` holds the approved copy for six
+attempts across English, Hindi and Gujarati, keyed by `(attempt, language)` with
+an English fallback. The worker never calls the model.
+
+**Consequence:** The worker is cheap, deterministic and testable, and follow-ups
+cost nothing in tokens. The text here must stay byte-identical to what was
+submitted in WhatsApp Manager — changing the copy means re-submitting for
+approval, and a mismatch is a rejected send, not a silent difference.
+
+## 2026-08-11 — Eligibility is checked twice, and re-checked at send time
+
+A task can sit in the queue for days. Almost everything that makes a nudge
+inappropriate — the lead replied, booked, opted out, a human took over —
+happens in that gap.
+
+**Decision:** `check_eligibility` runs when a task is scheduled *and* immediately
+before it is sent. The send-time check is the one that matters; the schedule-time
+check just avoids queuing work that is already pointless.
+
+**Consequence:** A nudge cannot be sent to a lead whose situation changed after
+scheduling, even if the cancellation path failed to run. Every skip records its
+reason on the task, so the dashboard can explain why a lead stopped being chased.
+
+## 2026-08-11 — `FollowUpTask.baseline_at`
+
+Staleness was originally decided by comparing the lead's `last_inbound_at` to the
+task's `created_at`. That ties a business rule to a database insert timestamp
+that nothing else in the system reasons about, and it cannot be reasoned about
+with an injected clock — which is how the whole test suite works.
+
+**Decision:** A task records the lead activity it was scheduled from. Staleness
+is `last_inbound_at > baseline_at`: "the lead wrote after we planned this nudge".
+
+**Consequence:** One added nullable column (migration `6373a5f23d58`). The rule
+now reads the way it is described, and the dashboard can show what a nudge was
+scheduled against. Pre-existing rows have a null baseline and are simply never
+treated as stale.
+
+## 2026-08-11 — Quiet hours defer, terminal conditions cancel
+
+A nudge that comes due at 3am is not a nudge that should be abandoned.
+
+**Decision:** Quiet hours push `scheduled_for` to the next allowed moment and
+leave the task `scheduled`. Opt-out, booking, handoff and the cap cancel it. The
+window is applied twice — when scheduling, and again at send time in case the
+worker was down overnight.
+
+**Consequence:** A worker outage across a night results in delayed nudges rather
+than nudges arriving at 4am when it catches up.
+
+## 2026-08-11 — A failed send does not consume an attempt
+
+`follow_up_count` is what enforces the hard cap.
+
+**Decision:** It is incremented only after the provider accepts the message. A
+rejected send marks the task `failed` and leaves the count alone.
+
+**Consequence:** A template-approval problem or an outage cannot silently burn
+through a lead's allowance. The flip side is that a permanently broken template
+would retry at the next cadence step rather than stopping — the task status makes
+that visible, and the cap still bounds it.

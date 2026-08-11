@@ -47,5 +47,23 @@ services:
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
+  worker:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://realtylead:realtylead@postgres:5432/realtylead
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+    # The API applies migrations on startup; the worker just polls the queue.
+    command: python -m app.workers.followup_worker
+
 volumes:
   pgdata:

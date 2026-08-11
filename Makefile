@@ -35,6 +35,12 @@ run:  ## Run the API with reload
 chat:  ## Talk to the conversation engine in the terminal (needs ANTHROPIC_API_KEY)
 	cd backend && .venv/bin/python -m app.scripts.chat $(ARGS)
 
+worker:  ## Run the follow-up worker (polls for due nudges)
+	cd backend && .venv/bin/python -m app.workers.followup_worker $(ARGS)
+
+worker-once:  ## Single follow-up pass, then exit (for cron)
+	cd backend && .venv/bin/python -m app.workers.followup_worker --once
+
 test:  ## Run the test suite
 	cd backend && .venv/bin/pytest -q
 
