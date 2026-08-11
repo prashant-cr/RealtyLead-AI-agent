@@ -1,1 +1,128 @@
-# RealtyLead-AI-agent
+# RealtyLead AI Agent
+
+AI lead qualification & follow-up agent for real estate agents and small brokerages.
+An inbound property enquiry gets an instant reply, a natural qualifying conversation,
+a score with reasons, and a booked appointment — logged where the human agent can see it.
+
+See [CLAUDE.md](CLAUDE.md) for the product spec and [docs/decisions.md](docs/decisions.md)
+for architecture decisions.
+
+## Status
+
+**M1 — Skeleton: done.** FastAPI app, domain models, migrations, docker-compose,
+health checks, tests, lint/type gates.
+
+**M2 — Conversation core: done.** Claude-powered engine with six tools, versioned
+prompts, rule-based lead scoring, and a CLI harness you can talk to right now.
+
+**M3 — WhatsApp adapter: done.** Meta Cloud API in and out, HMAC-verified
+webhooks, at-least-once deduplication, delivery receipts, media handling.
+
+**M4 — Booking: done.** Per-agent Google Calendar OAuth, free/busy-aware
+availability, calendar events with a full lead briefing, graceful degradation.
+
+Next: **M5 — Follow-up worker** (spaced nudges, approved templates, opt-out).
+
+## Quickstart
+
+```bash
+make setup      # venv + deps + .env
+make up         # Postgres + Redis via docker compose
+make migrate    # apply migrations
+make seed       # demo agent, 3 listings, 2 leads
+make chat       # talk to the agent in your terminal  ← M2
+make run        # http://localhost:8000/docs
+```
+
+`make chat` needs `ANTHROPIC_API_KEY` in `.env`. Inside it: `/profile` shows what
+the agent has learned and why the lead scored what it did, `/reset` starts over,
+`/quit` exits. Pass options with `make chat ARGS="--language hi --reset"`.
+
+`make check` runs everything CI would: ruff, mypy, pytest. `make help` lists the rest.
+
+Tests need no services — they run on in-memory SQLite. Start Postgres first if you
+want `test_migrations.py` to verify the migrations against the real target; point it
+at a non-default port with `TEST_POSTGRES_URL`.
+
+Running the whole stack in Docker instead: `docker compose up --build`. The `api`
+service applies migrations on startup, then serves on `:8000` with reload.
+
+### Ports
+
+If you already run Postgres or Redis locally, compose will fail to bind 5432/6379.
+Set `POSTGRES_PORT` / `REDIS_PORT` in `.env` and update `DATABASE_URL` / `REDIS_URL`
+to match — e.g. `POSTGRES_PORT=5433` with
+`DATABASE_URL=postgresql+asyncpg://realtylead:realtylead@localhost:5433/realtylead`.
+Inside compose the services talk over the Docker network, so only host access is affected.
+
+## WhatsApp (M3)
+
+Set `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET` in
+`.env`, then point a Meta app's webhook at `https://<host>/webhooks/whatsapp` and
+map each agent to their number:
+
+```sql
+update agents set whatsapp_phone_number_id = '<PHONE_NUMBER_ID>' where email = '...';
+```
+
+An unmapped `phone_number_id` is refused rather than being routed to some other
+agent's inventory. Locally, expose port 8000 with a tunnel (ngrok/cloudflared) —
+Meta requires a public HTTPS URL.
+
+Every delivery is authenticated with `X-Hub-Signature-256` over the raw body, so
+an unsigned or replayed-with-different-content request is rejected with 401. The
+endpoint acknowledges as soon as the message is recorded and runs the model turn
+in the background; see `docs/decisions.md` for why, and for the durability
+limitation that M5 fixes.
+
+## Google Calendar (M4)
+
+Create an OAuth client (type "Web application") in Google Cloud Console with the
+Calendar API enabled, register `http://localhost:8000/auth/google/callback` as a
+redirect URI, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and
+`OAUTH_STATE_SECRET` (`openssl rand -hex 32`) in `.env`.
+
+Each agent connects their own calendar by visiting:
+
+```
+http://localhost:8000/auth/google/start?agent_id=<uuid>
+```
+
+Once connected, their busy times are excluded when offering slots and every
+booking is written to their calendar with the lead's contact details, budget,
+timeline and score reasons in the description — so they can walk into the meeting
+briefed. If the lead's email is known, Google sends them an invite too.
+
+Connecting is optional: agents without a calendar still take bookings, stored in
+the database only. If Google is unreachable, availability falls back to our own
+appointments and bookings still succeed — a failed calendar write escalates to
+the human agent rather than being dropped or shown to the lead.
+
+## Layout
+
+```
+backend/
+  app/
+    api/         FastAPI routers (health today; webhooks + dashboard API later)
+    agent/       conversation engine, prompts/, tools, scoring, opt-out
+    channels/    adapter interface + in-memory channel; WhatsApp/SMS/email  (M3)
+    models/      SQLAlchemy models — the domain
+    services/    slot scheduling, quiet hours; Google Calendar          (M4)
+    workers/     background jobs                                     (M5)
+    core/        config, database, logging (incl. PII masking)
+    scripts/     seed, chat harness, other one-offs
+  alembic/       migrations
+  tests/
+frontend/        Next.js dashboard                                   (M6)
+docs/            decisions, backlog, API contracts
+```
+
+## Conventions
+
+- Type hints everywhere; `ruff` and `mypy --strict` must stay clean.
+- Tests alongside features; `make test` before calling anything done.
+- Secrets only in `.env` (git-ignored). Add new keys to `.env.example`.
+- Prompts live as versioned files in `backend/app/agent/prompts/` — never inlined.
+- Architectural decisions get a note in `docs/decisions.md`.
+- **No PII in logs.** Use `mask_phone` / `mask_email` / `mask_name` from
+  `app.core.logging`; a logging filter scrubs anything that slips through.
