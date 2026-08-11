@@ -42,9 +42,17 @@ negotiate on price. Recorded with `make demo-gif`.*
    │   Webhook    │──────────────────────────────────────┐
    └──────────────┘                                      │
                                                          ▼
+                                              ┌──────────────────────┐
+                                              │  Redis Stream queue  │
+                                              │  durable · retries · │
+                                              │  dead-letter         │
+                                              └──────────┬───────────┘
+                                                         ▼
                                              ┌───────────────────────┐
                                              │  Conversation engine  │
                                              │  (Claude + 6 tools)   │
+                                             │   in the inbound      │
+                                             │       worker          │
                                              └───────────┬───────────┘
              ┌───────────────────────────────────────────┼─────────────┐
              ▼                    ▼                      ▼             ▼
@@ -79,6 +87,10 @@ negotiate on price. Recorded with `make demo-gif`.*
 - **Quiet hours** (21:00–09:00 in the lead's timezone) defer outbound nudges.
 - **Tenant isolation** — every dashboard query filters by agent in its WHERE
   clause; there is no path that loads another agent's lead and then decides.
+- **No message is dropped on a crash** — the reply is only acknowledged once it
+  has actually been sent; anything else is retried, then dead-lettered.
+- **Rate limits** cap model calls per lead, nudges per agent, and login attempts,
+  and fail open so a Redis outage cannot lock anyone out.
 
 ---
 
@@ -112,7 +124,20 @@ make dashboard        # dashboard on http://localhost:3000
 > See [Troubleshooting](#troubleshooting).
 
 Prefer everything in Docker? `docker compose up --build` runs Postgres, Redis,
-the API (migrations included) and the follow-up worker together.
+the API (migrations included) and both workers together.
+
+> **If you run the API outside Docker, run the inbound worker too.** The webhook
+> records an incoming message and puts it on a Redis queue; the inbound worker is
+> what actually answers it. Without it, messages arrive and are never replied to.
+>
+> ```bash
+> make inbound-worker   # answers queued messages
+> make worker           # sends scheduled follow-ups
+> ```
+>
+> For a single-process setup with no worker, set `INBOUND_QUEUE_ENABLED=false` in
+> `.env` and the API answers inline instead — simpler, but a crash between the
+> webhook acknowledgement and the reply loses that message.
 
 ---
 
@@ -163,7 +188,7 @@ make dashboard   # http://localhost:3000, paste the token
 ### 2. Run the test suite
 
 ```bash
-make check       # backend: ruff + mypy --strict + 366 tests
+make check       # backend: ruff + mypy --strict + 408 tests
 make check-all   # the above plus the dashboard build and 34 Playwright specs
 ```
 
@@ -344,6 +369,57 @@ the morning. The queue is the `follow_up_tasks` table (not Redis) so the schedul
 survives restarts and is visible to the dashboard.
 
 ---
+
+
+### Reliability
+
+A lead's message must not be lost because a process died. Meta treats our `200`
+as final and will not redeliver, so everything after that acknowledgement has to
+be durable on its own.
+
+```
+webhook ──► record message (Postgres, deduplicated on wamid)
+        └─► enqueue claim (Redis Stream)          ← survives a crash
+                    │
+                    ▼
+        inbound worker ──► model turn ──► send reply ──► XACK
+                    │                                     ▲
+                    └── failure? don't ack ───────────────┘
+                            │
+                            ▼
+                    idle 120s → reclaimed and retried (4 attempts)
+                            │
+                            ▼
+                    still failing → dead-letter stream
+```
+
+The retry mechanism is Redis's own pending-entries list rather than anything we
+built: a failed turn is simply *not acknowledged*, so the idle threshold doubles
+as the backoff. An undelivered reply counts as a failure — if WhatsApp rejects
+the send, the turn is retried rather than marked done.
+
+Two deliberate degradations, both chosen so an infrastructure problem does not
+become a customer-facing one:
+
+- **Redis down?** The webhook falls back to answering in-process and logs an
+  error. That path can lose a turn on a crash, but the alternative is losing it
+  immediately and with certainty.
+- **Redis down?** Rate limits allow everything rather than blocking it, and
+  `/health/ready` still reports `ready`, so instances stay in the load balancer.
+
+`GET /health/ready` reports queue depth: `in_flight` (delivered to a worker, not
+yet acknowledged), `retained` and `dead_lettered`.
+
+### Rate limits
+
+| Limit | Default | Applies to |
+| --- | --- | --- |
+| `INBOUND_MESSAGES_PER_LEAD` | 20 per 5 min | Model calls one lead can trigger. Their messages are still recorded past this. |
+| `FOLLOW_UPS_PER_AGENT` | 60 per hour | Template nudges per agent. Over-budget nudges are deferred, not cancelled. |
+| `LOGIN_ATTEMPTS_PER_WINDOW` | 10 per 15 min | Login and signup, per email and per client address. Cleared on a successful login. |
+
+Counters are fixed windows, so a burst can straddle a boundary. Keys are hashed
+because the subjects are phone numbers and email addresses.
 
 ## API reference
 

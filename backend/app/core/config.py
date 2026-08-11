@@ -80,6 +80,27 @@ class Settings(BaseSettings):
     # only approved template messages may be sent.
     whatsapp_service_window_hours: int = 24
 
+    # --- reliability & rate limiting (M8) ---
+    # Inbound messages are queued to Redis and processed by the inbound worker.
+    # Turning this off falls back to in-process handling, which is what the
+    # webhook did before M8 — useful for a single-process local run.
+    inbound_queue_enabled: bool = True
+    # How long an unacknowledged turn sits before another worker retries it.
+    # Doubles as the retry backoff, so it must exceed a slow model turn.
+    inbound_retry_after_seconds: int = Field(default=120, ge=10)
+    inbound_max_attempts: int = Field(default=4, ge=1)
+
+    # A lead sending faster than this is looping or abusing; their messages are
+    # still recorded, they just stop costing a model call until the window rolls.
+    inbound_messages_per_lead: int = Field(default=20, ge=1)
+    inbound_window_seconds: int = Field(default=300, ge=1)
+    # Bounds a bulk import turning into a template-message flood.
+    follow_ups_per_agent: int = Field(default=60, ge=1)
+    follow_up_window_seconds: int = Field(default=3600, ge=1)
+    # Password guessing, per email and per client address.
+    login_attempts_per_window: int = Field(default=10, ge=1)
+    login_window_seconds: int = Field(default=900, ge=1)
+
     @field_validator("database_url")
     @classmethod
     def _require_async_driver(cls, v: str) -> str:

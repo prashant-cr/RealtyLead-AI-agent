@@ -5,10 +5,12 @@ Two endpoints, per Meta's contract:
 * `GET`  — one-time subscription handshake; echo `hub.challenge` back verbatim.
 * `POST` — message and status deliveries, authenticated by an HMAC over the raw body.
 
-The POST handler acknowledges as soon as the message is safely recorded and runs
-the model turn in the background. Meta re-delivers anything it does not see
-acknowledged within a few seconds, and a model turn takes longer than that — so
-replying 200 first is what stops a slow turn from becoming a duplicate reply.
+The POST handler acknowledges as soon as the message is safely recorded, then
+puts it on the inbound queue for a worker to answer. Meta re-delivers anything it
+does not see acknowledged within a few seconds, and a model turn takes longer
+than that — so replying 200 first is what stops a slow turn from becoming a
+duplicate reply. Because that 200 is final, whatever we do next has to be durable
+on its own: hence the queue rather than an in-process task (M8).
 """
 
 from __future__ import annotations
@@ -19,8 +21,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.llm import AnthropicLLM, LLMError
-from app.channels.whatsapp import WhatsAppChannel, WhatsAppError
 from app.channels.whatsapp_payload import (
     SIGNATURE_HEADER,
     ParsedWebhook,
@@ -28,16 +28,17 @@ from app.channels.whatsapp_payload import (
     verify_signature,
 )
 from app.core.config import Settings, get_settings
-from app.core.db import get_session, get_sessionmaker
+from app.core.db import get_session
 from app.core.logging import get_logger
-from app.services.google_calendar import GoogleCalendarClient
+from app.core.redis import get_redis, redis_available
+from app.services.inbound_queue import enqueue, ensure_group
 from app.services.ingestion import (
     Claim,
     UnknownAgentError,
     apply_status_updates,
     claim_inbound,
-    process_claimed,
 )
+from app.services.turn import run_claim
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 log = get_logger(__name__)
@@ -114,53 +115,58 @@ async def receive(
         if claim is not None:
             claims.append(claim)
 
-    # Commit before scheduling: the background task opens its own session and must
-    # be able to see the claimed rows.
+    # Commit before dispatching: the worker (or the fallback task) opens its own
+    # session and must be able to see the claimed rows.
     await session.commit()
 
-    for claim in claims:
-        background.add_task(_process_in_background, claim)
+    queued = await _dispatch(claims, background, settings)
 
-    return {"accepted": len(claims), "statuses_applied": applied}
+    return {"accepted": len(claims), "queued": queued, "statuses_applied": applied}
 
 
-async def _process_in_background(claim: Claim) -> None:
-    """Run the model turn and send the reply, outside the request/response cycle.
+async def _dispatch(claims: list[Claim], background: BackgroundTasks, settings: Settings) -> int:
+    """Hand each claim to the inbound worker, or run it here if that is not possible.
 
-    FastAPI background tasks are in-process: a crash or redeploy between the ack
-    and the reply loses that turn. M5 replaces this with the Redis-backed worker
-    already in the stack — see docs/decisions.md.
+    The queue is the durable path: the entry survives this process dying, and the
+    worker retries it. Falling back to an in-process task when Redis is down is a
+    deliberate downgrade to the pre-M8 behaviour — that path can lose a turn on a
+    crash, but the alternative is losing it immediately and with certainty, since
+    Meta treats our 200 as final and will not redeliver.
     """
-    settings = get_settings()
-    adapter: WhatsAppChannel | None = None
-    calendar: GoogleCalendarClient | None = None
-    try:
-        llm = AnthropicLLM(settings)
-    except LLMError as exc:
-        log.error("cannot process claim %s: %s", claim.message_id, exc)
-        return
+    if not claims:
+        return 0
 
-    async with get_sessionmaker()() as session:
-        try:
-            from app.models import Agent
+    if settings.inbound_queue_enabled:
+        client = get_redis(settings)
+        if await redis_available(client):
+            await ensure_group(client)
+            enqueued = 0
+            for claim in claims:
+                try:
+                    await enqueue(client, claim)
+                    enqueued += 1
+                except Exception:
+                    log.exception("could not queue message %s; running it here", claim.message_id)
+                    background.add_task(_process_in_process, claim)
+            return enqueued
 
-            agent = await session.get_one(Agent, claim.agent_id)
-            if not agent.whatsapp_phone_number_id:
-                log.error("agent %s has no whatsapp_phone_number_id", agent.id)
-                return
-            adapter = WhatsAppChannel(agent.whatsapp_phone_number_id, settings)
-            if agent.google_refresh_token:
-                calendar = GoogleCalendarClient(settings)
-            await process_claimed(session, llm, adapter, claim, settings, calendar=calendar)
-            await session.commit()
-        except (WhatsAppError, LLMError) as exc:
-            await session.rollback()
-            log.error("failed to process claim %s: %s", claim.message_id, exc)
-        except Exception:
-            await session.rollback()
-            log.exception("unexpected failure processing claim %s", claim.message_id)
-        finally:
-            if adapter is not None:
-                await adapter.close()
-            if calendar is not None:
-                await calendar.close()
+        log.error(
+            "redis is unavailable; processing %s message(s) in-process. "
+            "A crash before the reply will lose them.",
+            len(claims),
+        )
+
+    for claim in claims:
+        background.add_task(_process_in_process, claim)
+    return 0
+
+
+async def _process_in_process(claim: Claim) -> None:
+    """Fallback path: run the turn inside the API process.
+
+    Used when the queue is disabled or Redis is unreachable. In-process means a
+    crash or redeploy between the ack and the reply loses that turn — which is
+    exactly what the queue exists to prevent, so this should be rare and is
+    logged as an error when it happens.
+    """
+    await run_claim(claim, get_settings())

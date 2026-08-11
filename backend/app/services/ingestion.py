@@ -42,6 +42,15 @@ from app.services.google_calendar import GoogleCalendarClient
 log = get_logger(__name__)
 
 
+class DeliveryRejectedError(RuntimeError):
+    """The channel refused to send a reply we had already composed.
+
+    Transient by assumption — an expired token, a provider outage, a rate limit.
+    The inbound worker turns this into a retry rather than acknowledging the
+    message, so the lead is answered once the cause clears.
+    """
+
+
 class UnknownAgentError(LookupError):
     """The delivery was for a phone number we do not have an agent for."""
 
@@ -284,8 +293,15 @@ async def deliver(
         outbound_row.status = MessageStatus.SENT if delivery.accepted else MessageStatus.FAILED
     if delivery.accepted:
         lead.last_outbound_at = now
-    else:
-        log.error("delivery to lead %s failed: %s", lead.id, delivery.error)
+        return
+
+    log.error("delivery to lead %s failed: %s", lead.id, delivery.error)
+    # Raise so the caller can retry. Before M8 this only logged, which meant a
+    # provider outage silently produced leads who were qualified but never
+    # answered — the same loss the queue exists to prevent, one step further
+    # along. The row is left marked FAILED first so the state is right for any
+    # caller that chooses to commit rather than retry.
+    raise DeliveryRejectedError(delivery.error or "the channel rejected the message")
 
 
 async def apply_status_updates(session: AsyncSession, updates: list[StatusUpdate]) -> int:

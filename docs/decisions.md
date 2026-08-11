@@ -576,3 +576,77 @@ Calendar and a custom tone make it better, not functional.
 
 **Consequence:** The "under 10 minutes" promise is achievable without an agent
 having to complete a Google OAuth flow before their first lead.
+
+## 2026-08-11 — Inbound turns go through Redis Streams, not background tasks (M8)
+
+The webhook acknowledged Meta and then ran the model turn in a FastAPI
+`BackgroundTasks` callback. That is in-process: a crash, an OOM kill or a
+redeploy between the 200 and the reply lost that turn, with no retry and no
+record. Meta treats the 200 as final, so the lead simply never heard back. The
+backlog flagged this as the largest known gap twice, after M3 and again after M5.
+
+**Decision:** The webhook now only records the message and enqueues it. A
+separate `inbound_worker` runs the turn and acknowledges the stream entry once
+the reply has actually been sent.
+
+Streams rather than a list: `LPUSH`/`BRPOP` removes the entry before it is
+processed, so a worker dying mid-turn loses it — the same bug moved one process
+along. A stream's per-group pending list makes an unacknowledged entry
+recoverable. Streams rather than another Postgres table (which is how
+`follow_up_tasks` works): a follow-up is due on a date and a minute of polling
+delay is invisible, but a lead waiting on a reply notices seconds, and
+`XREADGROUP BLOCK` wakes the instant work arrives.
+
+**Consequence:** Retries need no machinery of their own. A failed turn is simply
+not acknowledged; `reclaim_stale` picks it up once it has been idle long enough,
+so the idle threshold *is* the backoff. Entries that exhaust four attempts move
+to a dead-letter stream rather than vanishing.
+
+The cost is a third process. Without the inbound worker running, messages are
+received and never answered — a failure mode that did not exist before, and the
+reason it is in `docker-compose.yml` rather than being optional.
+
+## 2026-08-11 — A Redis outage degrades the webhook rather than failing it
+
+If Redis is unreachable when a delivery arrives, we can either fail the request
+or handle it the old way.
+
+**Decision:** Fall back to the in-process path, and log it as an error.
+
+**Consequence:** That path can lose a turn on a crash — but the alternative is
+losing it immediately and with certainty, because a non-200 makes Meta redeliver
+a few times and then give up. A worse guarantee beats no guarantee. The same
+reasoning makes the rate limiters fail open and keeps Redis out of the readiness
+gate: a Redis outage should not pull every API instance out of the load balancer.
+
+## 2026-08-11 — Rate limits are fixed windows, and they fail open
+
+Nothing bounded inbound model calls per lead, follow-up sends per agent, or
+login attempts. Redis had been in the stack since M1 with no code using it.
+
+**Decision:** Fixed-window counters — one `INCR` on the hot path. Not a token
+bucket (needs Lua or a read-modify-write race) and not a sliding log (a sorted
+set and a range delete per call).
+
+**Consequence:** Burstiness at the window boundary: a subject can spend a full
+window's budget at the end of one window and again at the start of the next.
+Acceptable for "stop runaway spend", and would not be if these were billing
+quotas. Keys are SHA-256 of the subject because subjects are phone numbers and
+email addresses, and Redis keys appear in `MONITOR`, slow logs and exporters.
+
+## 2026-08-11 — An undelivered reply is a retry, not a completed turn
+
+Found by running the stack with a deliberately bad WhatsApp token: `deliver`
+marked the outbound row FAILED, logged, and returned normally. The worker
+reported `completed=1` and acknowledged the message. The lead had been qualified
+and would never be answered — the exact loss M8 was built to prevent, one step
+further along, and invisible to 404 passing tests.
+
+**Decision:** `deliver` raises `DeliveryRejectedError` after marking the row. The
+worker maps that to a retry.
+
+**Consequence:** The whole turn is retried, not just the send, so a retry costs
+another model call. That is deliberate: committing the reply and retrying only
+the delivery would leave a half-finished turn in the transcript, and re-running
+from a rolled-back state means one attempt produces exactly one assistant
+message. Bounded by the four-attempt budget.

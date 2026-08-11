@@ -77,20 +77,16 @@ async function main() {
 
   // Only shown when the assistant still owns the lead. A lead that has already
   // been escalated renders "Hand back to assistant" instead, so this is skipped
-  // rather than forced — the recording should not mutate the lead it is filming.
-  const takeover = page.getByTestId("takeover-button");
-  if (await takeover.count()) {
-    await takeover.scrollIntoViewIfNeeded();
-    await beat(page, 600);
-    await takeover.click();
-    await beat(page, 2200); // the AI is now silenced for this lead
-
-    const release = page.getByTestId("release-button");
-    if (await release.count()) {
-      await release.click();
-      await beat(page, 1800); // handed back to the agent
-    }
-  }
+  // Deliberately read-only from here. An earlier version clicked takeover and
+  // then released, guarded by a check that was supposed to make that a no-op on
+  // an already-escalated lead. It was not: a recording run left a seed lead
+  // marked "Taken over from the dashboard", which had to be undone by hand. A
+  // script whose job is to take a screenshot has no business writing to the
+  // database it is filming, so it no longer clicks anything that mutates.
+  await page.getByTestId("takeover-button").or(page.getByTestId("release-button")).first()
+    .scrollIntoViewIfNeeded()
+    .catch(() => {});
+  await beat(page, 1200); // the manual-control button, shown but not pressed
 
   await page.goBack();
   await page.getByTestId("lead-row").first().waitFor({ timeout: 20_000 });

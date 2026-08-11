@@ -19,7 +19,7 @@ import asyncio
 import contextlib
 import signal
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +45,7 @@ from app.services.followups import (
     schedule_next,
 )
 from app.services.quiet_hours import is_quiet_hour, next_send_time
+from app.services.ratelimit import check, follow_up_limit
 
 log = get_logger(__name__)
 
@@ -118,6 +119,24 @@ async def process_task(
         )
         report.deferred += 1
         log.info("deferring follow-up %s to %s (quiet hours)", task.id, task.scheduled_for)
+        return
+
+    # Bounds a bulk import turning into a flood of template messages. Deferred
+    # rather than cancelled: the lead still deserves the nudge, just not in this
+    # pass. Checked here — after eligibility and quiet hours — so budget is only
+    # spent on nudges that were actually about to be sent.
+    allowance = await check(follow_up_limit(settings), str(agent.id))
+    if not allowance.allowed:
+        task.scheduled_for = now + timedelta(seconds=allowance.retry_after_seconds)
+        report.deferred += 1
+        log.warning(
+            "agent %s is over the follow-up limit (%s per %ss); deferring %s by %ss",
+            agent.id,
+            allowance.limit.max_events,
+            allowance.limit.window_seconds,
+            task.id,
+            allowance.retry_after_seconds,
+        )
         return
 
     template = follow_up_template(task.attempt_number, lead.language)

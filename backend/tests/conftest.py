@@ -19,8 +19,10 @@ os.environ.setdefault("ENVIRONMENT", "test")
 
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.db import get_session  # noqa: E402
+from app.core.redis import set_redis  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models import Base  # noqa: E402
+from tests.fakes import FakeRedis  # noqa: E402
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -30,6 +32,23 @@ def _clear_settings_cache() -> AsyncIterator[None]:
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def fake_redis() -> AsyncIterator[FakeRedis]:
+    """Install a fresh in-memory Redis for every test.
+
+    Autouse and unconditional. Without it the rate limiters and the inbound queue
+    reach for a real server on `redis_url`, and if a developer happens to have one
+    running the suite stops being hermetic in a particularly confusing way: rate
+    limit counters survive between tests, so an unrelated test fails because
+    earlier tests spent the budget. The state also persists between runs, so it
+    would pass on a clean machine and fail on the second run of the same machine.
+    """
+    fake = FakeRedis()
+    set_redis(fake)
+    yield fake
+    set_redis(None)
 
 
 @pytest.fixture

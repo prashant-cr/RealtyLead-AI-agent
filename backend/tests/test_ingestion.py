@@ -17,6 +17,7 @@ from app.models.enums import (
     MessageStatus,
 )
 from app.services.ingestion import (
+    DeliveryRejectedError,
     UnknownAgentError,
     apply_status_updates,
     claim_inbound,
@@ -282,15 +283,19 @@ async def test_send_failure_marks_the_message_failed(session: AsyncSession) -> N
 
             return DeliveryResult(external_id=None, accepted=False, error="rejected")
 
-    await process_claimed(
-        session,
-        FakeLLM(text_turn("hi")),
-        FailingChannel(Channel.WHATSAPP),
-        claim,
-        whatsapp_settings(),
-        now=NOW,
-    )
+    with pytest.raises(DeliveryRejectedError):
+        await process_claimed(
+            session,
+            FakeLLM(text_turn("hi")),
+            FailingChannel(Channel.WHATSAPP),
+            claim,
+            whatsapp_settings(),
+            now=NOW,
+        )
 
+    # Marked failed before raising, so a caller that commits rather than retries
+    # still records the truth. Raising is what lets the inbound worker retry
+    # instead of acknowledging a reply the lead never received.
     outbound = (
         await session.execute(select(Message).where(Message.direction == MessageDirection.OUTBOUND))
     ).scalar_one()

@@ -75,5 +75,37 @@ services:
       start_period: 10s
       retries: 3
 
+  # Answers leads. The webhook only records the message and puts it on the Redis
+  # queue; this is what actually runs the model turn and sends the reply, so
+  # without it inbound messages are received and never answered.
+  #
+  # Safe to scale: `docker compose up -d --scale inbound-worker=3`. Redis hands
+  # each stream entry to exactly one consumer in the group, and each replica
+  # takes its own consumer name from its hostname and pid.
+  inbound-worker:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://realtylead:realtylead@postgres:5432/realtylead
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      api:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+    command: python -m app.workers.inbound_worker
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qa inbound_worker /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
 volumes:
   pgdata:

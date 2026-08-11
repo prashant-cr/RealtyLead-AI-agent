@@ -23,7 +23,7 @@ Ideas deliberately out of scope for v1. Captured so we stop thinking about them.
 - **Outbox pattern for outbound messages.** Right now a send failure after a DB
   commit could lose a message. A transactional outbox + worker would make delivery
   at-least-once.
-- **Rate limiting per agent.** Redis is in the stack for this; nothing uses it yet.
+- ~~Rate limiting per agent.~~ Done in M8 (`app/services/ratelimit.py`).
 - **Timezone per lead.** `Lead.timezone` exists but nothing populates it; quiet
   hours currently fall back to the agent's timezone.
 
@@ -45,14 +45,13 @@ Ideas deliberately out of scope for v1. Captured so we stop thinking about them.
   so there is no way to see what a qualified lead costs.
 
 ## Noticed while building M3
-- **Background tasks are not durable.** A crash between the webhook ack and the
-  reply loses that turn with no retry. M5's Redis worker should take over webhook
-  processing, not just follow-ups. This is the largest known gap in M3.
+- ~~Background tasks are not durable.~~ Done in M8: the webhook enqueues to
+  Redis Streams and `app/workers/inbound_worker.py` answers, with retries and a
+  dead-letter stream.
 - **Media is described, never read.** Floor plans, property photos and voice
   notes arrive as placeholders. Vision on images and transcription for voice
   notes are both plausible and would want a deliberate cost/latency decision.
-- **No inbound rate limiting.** A lead (or a bad actor) can drive one model call
-  per message. Redis is in the stack; per-lead throttling belongs there.
+- ~~No inbound rate limiting.~~ Done in M8: per-lead cap before the model call.
 - **Read receipts are never sent.** `WhatsAppChannel.mark_read` exists and is
   tested but nothing calls it — worth wiring in so leads see their message landed.
 - **Replies are not split.** A long model reply goes out as one WhatsApp message;
@@ -79,10 +78,7 @@ Ideas deliberately out of scope for v1. Captured so we stop thinking about them.
   no-show reducer and fits naturally into M5's worker.
 
 ## Noticed while building M5
-- **Webhook processing still uses in-process background tasks.** M5 was expected
-  to fix this, but the follow-up queue turned out not to need Redis, so nothing
-  durable was built for the webhook path. It remains the largest reliability gap:
-  a crash between the webhook ack and the reply loses that turn.
+- ~~Webhook processing still uses in-process background tasks.~~ Done in M8.
 - **Templates must be approved in WhatsApp Manager before any of this sends.**
   The copy in `app/channels/templates.py` is written and tested but has never
   been submitted. Until it is approved, every follow-up will be rejected by Meta.
@@ -91,8 +87,8 @@ Ideas deliberately out of scope for v1. Captured so we stop thinking about them.
   is tomorrow at 11" message, which is the cheapest no-show reduction available.
 - **Failed nudges are not retried.** A task that fails stays failed; the next
   cadence step still fires. A bounded retry would be better than waiting days.
-- **No per-agent nudge rate limit.** A brokerage importing 500 stale leads would
-  send 500 templates in one pass. Redis is in the stack for exactly this.
+- ~~No per-agent nudge rate limit.~~ Done in M8: over-budget nudges are deferred,
+  not cancelled.
 - **Follow-up effectiveness is not measured.** Nothing records which attempt
   number actually produced a reply, so the cadence cannot be tuned with evidence.
 
@@ -118,8 +114,8 @@ Ideas deliberately out of scope for v1. Captured so we stop thinking about them.
 - **No email verification.** Signup accepts any well-formed address.
 - **Email validation is a pragmatic regex**, not RFC-complete — deliberate, to
   avoid pulling in email-validator and dnspython. Revisit when we send email.
-- **No rate limiting on login or signup.** Password guessing is bounded only by
-  scrypt's cost. Redis is in the stack for exactly this.
+- ~~No rate limiting on login or signup.~~ Done in M8, per email and per client
+  address, cleared on a successful login.
 - **The session token is still in localStorage** (from M6). Now that there is a
   real login, an httpOnly cookie plus CSRF is worth doing properly.
 - **No "your sessions" screen.** `AgentSession.user_agent` is recorded but never
@@ -130,3 +126,28 @@ Ideas deliberately out of scope for v1. Captured so we stop thinking about them.
   inventory unless `replace` is used.
 - **`needs_rehash` is never called.** Passwords are not upgraded on login when
   parameters are raised — a small loop to add in the login path.
+
+## Noticed while building M8
+
+- **Failed nudges still are not retried**, and now the inconsistency is visible:
+  inbound turns retry four times and dead-letter, while a follow-up that fails
+  stays failed. The follow-up worker should borrow the same shape.
+- **Nothing consumes the dead-letter stream.** It is written and readable with
+  `XRANGE`, but there is no view, no alert and no way to replay an entry once the
+  cause is fixed. A `--replay-dead-letters` flag on the inbound worker is the
+  obvious next step.
+- **`X-Forwarded-For` is trusted for rate-limit keys.** Correct behind a proxy,
+  spoofable by a direct caller. Once a deployment target is chosen, the trusted
+  proxy list should be explicit rather than "whatever sent the header".
+- **The queue has no priority.** A lead mid-conversation queues behind a batch of
+  first-contact messages. Fine at one agent; a brokerage-sized burst would make
+  active conversations feel slow.
+- **`FakeRedis` is a hand-written model of Redis.** `test_inbound_queue_live.py`
+  checks the critical paths against a real server, but only when `REDIS_TEST_URL`
+  is set — nothing runs it by default, so a divergence could sit unnoticed until
+  someone runs it. It belongs in CI against a Redis service container.
+- **No metrics.** Queue depth, retry rate and dead-letter count are visible on
+  `/health/ready` and nowhere else. There is no history and nothing to alert on.
+- **The inbound worker has no backpressure.** It reads a batch of ten and runs
+  them one at a time; there is no concurrency within a worker and no signal when
+  the queue is growing faster than it drains beyond watching `in_flight`.

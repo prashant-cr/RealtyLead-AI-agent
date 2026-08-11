@@ -38,6 +38,12 @@ chat:  ## Talk to the conversation engine in the terminal (needs ANTHROPIC_API_K
 worker:  ## Run the follow-up worker (polls for due nudges)
 	cd backend && .venv/bin/python -m app.workers.followup_worker $(ARGS)
 
+inbound-worker:  ## Answer queued inbound messages (needs Redis + ANTHROPIC_API_KEY)
+	cd backend && .venv/bin/python -m app.workers.inbound_worker
+
+inbound-once:  ## Drain the inbound queue once, then exit
+	cd backend && .venv/bin/python -m app.workers.inbound_worker --once
+
 worker-once:  ## Single follow-up pass, then exit (for cron)
 	cd backend && .venv/bin/python -m app.workers.followup_worker --once
 

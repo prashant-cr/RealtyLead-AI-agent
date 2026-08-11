@@ -14,13 +14,14 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import CurrentAgent, CurrentSession
+from app.core.config import Settings, get_settings
 from app.core.db import get_session
 from app.core.logging import get_logger, mask_email
 from app.models import Agent
@@ -28,9 +29,37 @@ from app.models.agent import DEFAULT_WORKING_HOURS
 from app.models.enums import Language
 from app.services import sessions as session_service
 from app.services.passwords import WeakPasswordError, hash_password, verify_password
+from app.services.ratelimit import check, login_limit, reset
 
 router = APIRouter(prefix="/auth", tags=["accounts"])
 log = get_logger(__name__)
+
+
+def client_address(request: Request) -> str:
+    """Best-effort client address for rate limiting.
+
+    Trusts the left-most `X-Forwarded-For` entry when present, because in every
+    supported deployment this API sits behind a proxy and `request.client.host`
+    would otherwise be the proxy for every caller — one shared bucket, which
+    would let one noisy client lock everyone out. The header is spoofable by a
+    direct caller, so this bounds accidental abuse and raises the cost of the
+    deliberate kind; it is not an access control.
+    """
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+async def _throttle(subject: str, settings: Settings) -> None:
+    """Reject the request if `subject` is out of authentication attempts."""
+    decision = await check(login_limit(settings), subject)
+    if not decision.allowed:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many attempts. Try again shortly.",
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
 
 
 @lru_cache(maxsize=1)
@@ -96,8 +125,14 @@ class PasswordChangeRequest(BaseModel):
 async def signup(
     body: SignupRequest,
     session: SessionDep,
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
     user_agent: Annotated[str | None, Header(alias="User-Agent")] = None,
 ) -> SessionOut:
+    # Per address only: the email is chosen by whoever is signing up, so limiting
+    # on it would bound nothing.
+    await _throttle(f"signup:{client_address(request)}", settings)
+
     try:
         password_hash = hash_password(body.password)
     except WeakPasswordError as exc:
@@ -139,8 +174,18 @@ async def signup(
 async def login(
     body: LoginRequest,
     session: SessionDep,
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
     user_agent: Annotated[str | None, Header(alias="User-Agent")] = None,
 ) -> SessionOut:
+    # Both, because they bound different attacks: the address stops one client
+    # working through a password list, and the email stops a distributed attempt
+    # at a single account.
+    address_subject = f"login:{client_address(request)}"
+    email_subject = f"login:{body.email.lower()}"
+    await _throttle(address_subject, settings)
+    await _throttle(email_subject, settings)
+
     agent = (
         await session.execute(select(Agent).where(func.lower(Agent.email) == body.email.lower()))
     ).scalar_one_or_none()
@@ -156,6 +201,11 @@ async def login(
             await asyncio.to_thread(verify_password, body.password, _dummy_hash())
         log.warning("failed dashboard login for %s", mask_email(body.email))
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password.")
+
+    # Signing in successfully clears the budget, so somebody who mistyped their
+    # password twice is not left locked out for the rest of the window.
+    await reset(login_limit(settings), email_subject)
+    await reset(login_limit(settings), address_subject)
 
     record, token = await session_service.create_session(session, agent, user_agent=user_agent)
     return SessionOut(

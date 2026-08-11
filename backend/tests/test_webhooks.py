@@ -10,7 +10,9 @@ from app.channels.whatsapp_payload import SIGNATURE_HEADER, sign
 from app.core.config import Settings
 from app.models import Lead, Message
 from app.models.enums import Channel, MessageDirection, MessageRole, MessageStatus
+from app.services.inbound_queue import STREAM, consume
 from tests.factories import make_agent, make_listing
+from tests.fakes import FakeRedis
 from tests.test_whatsapp_payload import TEXT_MESSAGE, envelope, message_value
 
 SECRET = "test-app-secret"
@@ -244,4 +246,71 @@ async def test_empty_delivery_is_acknowledged(wa_client: AsyncClient) -> None:
     response = await wa_client.post("/webhooks/whatsapp", content=body, headers=headers)
 
     assert response.status_code == 200
-    assert response.json() == {"accepted": 0, "statuses_applied": 0}
+    assert response.json() == {"accepted": 0, "queued": 0, "statuses_applied": 0}
+
+
+# ------------------------------------------------------------- queueing (M8)
+
+
+async def test_an_accepted_message_is_queued_not_run_in_process(
+    wa_client: AsyncClient, session: AsyncSession, fake_redis: FakeRedis
+) -> None:
+    """The durability guarantee: once we have told Meta 200, the work is in Redis
+    and survives this process dying."""
+    await seed_agent(session)
+    body, headers = signed(envelope(message_value(TEXT_MESSAGE)))
+
+    response = await wa_client.post("/webhooks/whatsapp", content=body, headers=headers)
+
+    assert response.json() == {"accepted": 1, "queued": 1, "statuses_applied": 0}
+    [queued] = await consume(fake_redis, "test-worker")
+    assert queued.claim.text == TEXT_MESSAGE["text"]["body"]
+
+
+async def test_a_redelivered_message_is_queued_only_once(
+    wa_client: AsyncClient, session: AsyncSession, fake_redis: FakeRedis
+) -> None:
+    """Meta redelivers anything it thinks we missed. Dedup happens before the
+    queue, so a redelivery must not produce a second reply."""
+    await seed_agent(session)
+    body, headers = signed(envelope(message_value(TEXT_MESSAGE)))
+
+    first = await wa_client.post("/webhooks/whatsapp", content=body, headers=headers)
+    second = await wa_client.post("/webhooks/whatsapp", content=body, headers=headers)
+
+    assert first.json()["queued"] == 1
+    assert second.json()["queued"] == 0
+    assert await fake_redis.xlen(STREAM) == 1
+
+
+async def test_the_message_is_still_handled_when_redis_is_down(
+    wa_client: AsyncClient, session: AsyncSession, fake_redis: FakeRedis
+) -> None:
+    """Degrade to the pre-M8 in-process path rather than dropping the lead's
+    message: Meta treats our 200 as final and will not redeliver."""
+    await seed_agent(session)
+    fake_redis.fail_with = ConnectionError("redis is gone")
+    body, headers = signed(envelope(message_value(TEXT_MESSAGE)))
+
+    response = await wa_client.post("/webhooks/whatsapp", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"accepted": 1, "queued": 0, "statuses_applied": 0}
+    # Still recorded in the transcript — the claim happened before dispatch.
+    stored = (await session.execute(select(func.count()).select_from(Message))).scalar_one()
+    assert stored == 1
+
+
+async def test_the_queue_can_be_turned_off(
+    client_factory: ClientFactory, session: AsyncSession, fake_redis: FakeRedis
+) -> None:
+    """Single-process local runs do not want a worker; the setting falls back to
+    handling the turn inside the API."""
+    await seed_agent(session)
+    api = await client_factory(wa_settings(inbound_queue_enabled=False))
+    body, headers = signed(envelope(message_value(TEXT_MESSAGE)))
+
+    response = await api.post("/webhooks/whatsapp", content=body, headers=headers)
+
+    assert response.json()["queued"] == 0
+    assert await fake_redis.xlen(STREAM) == 0
