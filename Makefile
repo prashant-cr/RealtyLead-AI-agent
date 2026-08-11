@@ -41,6 +41,9 @@ worker:  ## Run the follow-up worker (polls for due nudges)
 worker-once:  ## Single follow-up pass, then exit (for cron)
 	cd backend && .venv/bin/python -m app.workers.followup_worker --once
 
+demo:  ## Play a full lead journey end to end (no API keys needed)
+	cd backend && .venv/bin/python -m app.scripts.demo
+
 token:  ## Issue a dashboard API token: make token [EMAIL=agent@example.com]
 	cd backend && .venv/bin/python -m app.scripts.issue_token $(if $(EMAIL),--email $(EMAIL),)
 

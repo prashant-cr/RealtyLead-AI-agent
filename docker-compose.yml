@@ -64,6 +64,14 @@ services:
       - ./backend:/app
     # The API applies migrations on startup; the worker just polls the queue.
     command: python -m app.workers.followup_worker
+    # The image's HEALTHCHECK curls the API port, which this service does not
+    # serve — without overriding it the worker is permanently "unhealthy".
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f followup_worker > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
   pgdata:

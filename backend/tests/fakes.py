@@ -61,11 +61,12 @@ class FakeLLM:
 
     @property
     def last_system(self) -> str:
-        return self.calls[-1]["system"]
+        return str(self.calls[-1]["system"])
 
     @property
     def last_messages(self) -> list[dict[str, Any]]:
-        return self.calls[-1]["messages"]
+        messages: list[dict[str, Any]] = self.calls[-1]["messages"]
+        return messages
 
 
 class ExplodingLLM:
