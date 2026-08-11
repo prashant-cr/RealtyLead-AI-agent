@@ -95,3 +95,19 @@ Ideas deliberately out of scope for v1. Captured so we stop thinking about them.
   send 500 templates in one pass. Redis is in the stack for exactly this.
 - **Follow-up effectiveness is not measured.** Nothing records which attempt
   number actually produced a reply, so the cadence cannot be tuned with evidence.
+
+## Noticed while building M6
+- **No token expiry or rotation UI.** `make token` is the only way to issue or
+  revoke. M7's accounts should bring sessions with expiry.
+- **The dashboard token sits in localStorage**, readable by any script on the
+  origin. Fine today; an httpOnly cookie + CSRF is the better end state.
+- **No realtime updates.** The pipeline is fetched on load; a new WhatsApp message
+  does not appear until the agent refreshes. Polling or SSE would fix it.
+- **No pagination controls in the UI.** The API paginates, the dashboard always
+  requests the first 50.
+- **No listings or appointment management screens.** The dashboard reads the
+  pipeline; editing inventory is still SQL. M7 covers listing import.
+- **Search hits the database with ILIKE on every keystroke.** Fine at demo scale,
+  wants debouncing and an index before real volume.
+- **The lead detail page is not accessible-audited** — no keyboard-trap testing,
+  no screen-reader pass, and colour is doing some work that text should.

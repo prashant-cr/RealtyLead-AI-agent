@@ -164,7 +164,14 @@ class ConversationEngine:
         if is_opt_out(text):
             return await self._handle_opt_out(lead, conversation, channel, now)
 
-        if conversation.status is ConversationStatus.HUMAN_TAKEOVER:
+        # Check the lead as well as the conversation: an agent can claim a lead
+        # before it has a conversation, and a handed-off lead whose conversation
+        # was closed and recreated must not quietly get the assistant back.
+        if (
+            conversation.status is ConversationStatus.HUMAN_TAKEOVER
+            or lead.status is LeadStatus.HANDED_OFF
+        ):
+            conversation.status = ConversationStatus.HUMAN_TAKEOVER
             # A human owns this thread; record the message and stay quiet.
             await cancel_pending(self._session, lead.id, "human took over the conversation")
             await self._session.flush()

@@ -58,6 +58,11 @@ class Agent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # SHA-256 of the agent's dashboard API token. Tokens are high-entropy random
+    # strings, not user-chosen passwords, so a fast hash is appropriate — there is
+    # no dictionary to attack. Replaced by real accounts in M7.
+    api_token_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+
     listings: Mapped[list[Listing]] = relationship(
         back_populates="agent", cascade="all, delete-orphan"
     )

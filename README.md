@@ -24,7 +24,10 @@ availability, calendar events with a full lead briefing, graceful degradation.
 **M5 — Follow-up worker: done.** Day 1/3/7/14-then-monthly cadence, approved
 WhatsApp templates in three languages, quiet hours, hard cap, opt-out honoured.
 
-Next: **M6 — Dashboard** (lead pipeline, transcripts, scores, manual takeover).
+**M6 — Dashboard: done.** Authenticated dashboard API plus a Next.js pipeline
+board, transcripts, score reasons, manual takeover and agent-sent messages.
+
+Next: **M7 — Onboarding** (agent signup, CSV listing import, tone customisation).
 
 ## Quickstart
 
@@ -36,6 +39,10 @@ make seed       # demo agent, 3 listings, 2 leads
 make chat       # talk to the agent in your terminal  ← M2
 make run        # http://localhost:8000/docs
 make worker     # follow-up worker (or `make worker-once` for cron)  ← M5
+
+make dashboard-setup   # once: npm install + Playwright browser
+make token             # issue a dashboard token, then:
+make dashboard         # http://localhost:3000  ← M6
 ```
 
 `make chat` needs `ANTHROPIC_API_KEY` in `.env`. Inside it: `/profile` shows what
@@ -78,6 +85,36 @@ an unsigned or replayed-with-different-content request is rejected with 401. The
 endpoint acknowledges as soon as the message is recorded and runs the model turn
 in the background; see `docs/decisions.md` for why, and for the durability
 limitation that M5 fixes.
+
+## Dashboard (M6)
+
+```bash
+make dashboard-setup     # once
+make token               # prints a token — copy it
+make dashboard           # http://localhost:3000
+```
+
+Paste the token into the sign-in screen. The board shows every lead with its
+score and temperature, filters for the ones that need a human, and a detail view
+with the full WhatsApp transcript, the score broken down by reason, upcoming
+appointments and scheduled nudges. **Take over** stops the assistant replying and
+cancels pending follow-ups; **Hand back** returns it. The agent can also send
+messages themselves, within WhatsApp's 24h window.
+
+Authentication is a bearer token per agent (`make token` issues and rotates;
+re-running it revokes the previous one). Every query is scoped to the token's
+agent in its WHERE clause — one agent can never see another's leads. Real
+accounts arrive in M7.
+
+The dashboard is a separate origin, so the API's `CORS_ALLOW_ORIGINS` must list
+wherever it is served from (defaults cover localhost:3000 and :3200).
+
+`make e2e` runs the Playwright suite against a stubbed API; `e2e/live.spec.ts`
+runs the same flows against a real backend when `LIVE_TOKEN` is set:
+
+```bash
+cd frontend && LIVE_TOKEN=rl_... LIVE_URL=http://localhost:3000 npx playwright test live
+```
 
 ## Follow-ups (M5)
 
@@ -133,7 +170,10 @@ backend/
     scripts/     seed, chat harness, other one-offs
   alembic/       migrations
   tests/
-frontend/        Next.js dashboard                                   (M6)
+frontend/        Next.js 14 dashboard — pipeline, transcripts, takeover
+  app/           App Router pages
+  lib/api.ts     typed client for the dashboard API
+  e2e/           Playwright: stubbed specs + a live-backend spec
 docs/            decisions, backlog, API contracts
 ```
 

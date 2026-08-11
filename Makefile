@@ -41,6 +41,18 @@ worker:  ## Run the follow-up worker (polls for due nudges)
 worker-once:  ## Single follow-up pass, then exit (for cron)
 	cd backend && .venv/bin/python -m app.workers.followup_worker --once
 
+token:  ## Issue a dashboard API token: make token [EMAIL=agent@example.com]
+	cd backend && .venv/bin/python -m app.scripts.issue_token $(if $(EMAIL),--email $(EMAIL),)
+
+dashboard:  ## Run the Next.js dashboard on :3000
+	cd frontend && npm run dev
+
+dashboard-setup:  ## Install dashboard dependencies
+	cd frontend && npm install && npx playwright install chromium
+
+e2e:  ## Playwright tests for the dashboard's critical flows
+	cd frontend && npx playwright test
+
 test:  ## Run the test suite
 	cd backend && .venv/bin/pytest -q
 
@@ -53,7 +65,10 @@ fmt:  ## Auto-fix lint and format
 typecheck:  ## Run mypy
 	cd backend && .venv/bin/mypy app
 
-check: lint typecheck test  ## Everything CI would run
+check: lint typecheck test  ## Everything CI would run (backend)
+
+check-all: check  ## Backend checks plus the dashboard
+	cd frontend && npx tsc --noEmit && npm run build && npx playwright test
 
 clean:  ## Remove caches
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

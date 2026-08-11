@@ -325,3 +325,20 @@ async def test_tool_loop_is_bounded(session: AsyncSession) -> None:
 
     assert len(llm.calls) <= engine._settings.max_tool_iterations  # noqa: SLF001
     assert result.reply  # fell back rather than hanging
+
+
+async def test_handed_off_lead_stays_silent_even_in_a_new_conversation(
+    session: AsyncSession,
+) -> None:
+    """Closing and recreating a conversation must not hand the lead back to the AI."""
+    agent, lead = await setup(session)
+    lead.status = LeadStatus.HANDED_OFF
+    await session.flush()
+    llm = FakeLLM(text_turn("this must not be sent"))
+    engine = ConversationEngine(session, llm)
+
+    result = await engine.handle_inbound(lead=lead, agent=agent, text="Hello?", now=NOW)
+
+    assert llm.calls == []
+    assert result.reply == ""
+    assert result.conversation.status is ConversationStatus.HUMAN_TAKEOVER

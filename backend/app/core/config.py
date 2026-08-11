@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "INFO"
 
+    # The dashboard is deployed separately, so the browser calls this API
+    # cross-origin. Only these origins may do so, and only with credentials
+    # they already hold (a bearer token) — never cookies.
+    cors_allow_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:3000", "http://localhost:3200"]
+    )
+
     # --- datastores ---
     database_url: str = "postgresql+asyncpg://realtylead:realtylead@localhost:5432/realtylead"
     redis_url: str = "redis://localhost:6379/0"

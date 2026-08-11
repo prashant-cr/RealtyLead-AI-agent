@@ -426,3 +426,70 @@ rejected send marks the task `failed` and leaves the count alone.
 through a lead's allowance. The flip side is that a permanently broken template
 would retry at the next cadence step rather than stopping — the task status makes
 that visible, and the cap still bounds it.
+
+## 2026-08-11 — M6: the dashboard API is authenticated from day one
+
+These endpoints return lead phone numbers, budgets and full transcripts. CLAUDE.md
+puts agent signup in M7, but shipping the dashboard unauthenticated in the
+meantime would publish every lead's contact details.
+
+**Decision:** Bearer tokens per agent, issued out of band
+(`make token`) and stored as a SHA-256 hash. Tokens are high-entropy random
+strings rather than user-chosen passwords, so there is no dictionary to attack
+and a fast hash is the right choice — bcrypt would buy nothing here.
+
+**Consequence:** M7 replaces this with real accounts. Until then there is no
+self-service signup, no rotation UI and no expiry; re-running `make token` is
+how a token is both rotated and revoked.
+
+## 2026-08-11 — Scoping is in the WHERE clause, not a post-hoc check
+
+Multi-tenant leakage is the worst failure this product could have.
+
+**Decision:** Every dashboard query filters on `Lead.agent_id == agent.id` as
+part of the query itself. There is no code path that loads a lead and then
+decides whether the caller may see it. Another agent's lead returns 404, not
+403 — a 403 would confirm the record exists.
+
+**Consequence:** Tested directly: an agent cannot list, read, take over or
+transcript another agent's lead, and `/api/stats` counts only their own.
+
+## 2026-08-11 — CORS, found by testing against the real backend
+
+The Playwright suite stubs the API, which is right for testing the dashboard's
+own behaviour — but it hid the fact that the browser could not reach the backend
+at all. The dashboard is a separate origin, and FastAPI had no CORS middleware,
+so every request failed preflight.
+
+**Decision:** `CORSMiddleware` with an explicit `cors_allow_origins` list, no
+wildcard, `allow_credentials=False` (we send a bearer token, not cookies) and
+only the methods and headers actually used.
+
+**Consequence:** Deploying the dashboard to a new origin needs that origin added
+to `CORS_ALLOW_ORIGINS`. The lesson generalises: `e2e/live.spec.ts` runs the same
+flows against the real stack and is what caught this — worth keeping green.
+
+## 2026-08-11 — A lead can be taken over before it has a conversation
+
+Found the same way. An agent may want to claim a lead imported from a portal
+*before* it ever writes in, so the assistant never answers it.
+
+**Decision:** Takeover no longer requires a conversation. More importantly, the
+engine now treats `lead.status == HANDED_OFF` as "a human owns this" in addition
+to the conversation flag — otherwise a handed-off lead whose conversation was
+closed and recreated would quietly get the assistant back.
+
+**Consequence:** Handoff is durable across conversation boundaries. The dashboard
+mirrors the same rule, since `conversation_status` is null for an unstarted lead.
+
+## 2026-08-11 — The token lives in localStorage
+
+The dashboard is a separate origin using bearer auth, so a cookie would need
+CORS credentials plus CSRF protection.
+
+**Decision:** `localStorage`, read by the API client on each request.
+
+**Consequence:** Any script running on the dashboard origin can read the token.
+Acceptable while the dashboard loads no third-party scripts, and explicitly worth
+revisiting in M7 alongside real accounts — an httpOnly cookie plus CSRF tokens is
+the better end state.
